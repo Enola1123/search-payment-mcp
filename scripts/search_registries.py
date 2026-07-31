@@ -320,11 +320,14 @@ def search_mcpcn(keyword, max_results=20):
 def search_clawhub(keyword, max_results=20):
     """搜索 ClawHub Skill 市场，无需登录。
 
-    API: GET https://clawhub.ai/api/v1/packages?q=<keyword>&limit=<N>
-    返回 skills 和 plugins 列表，包含 isOfficial 归属信号。
+    API: GET https://clawhub.ai/api/v1/packages/search?q=<keyword>&limit=<N>
+    返回 results 列表，每项含 package 对象，包括 isOfficial 归属信号。
+
+    注意：不能使用 /api/v1/packages?q= — 该端点不支持 q 参数，会忽略搜索词
+    并返回默认列表。必须使用 /api/v1/packages/search?q= 才能真正按关键词过滤。
     """
     url = (
-        "https://clawhub.ai/api/v1/packages?"
+        "https://clawhub.ai/api/v1/packages/search?"
         f"q={urllib.parse.quote(keyword)}&limit={max_results}"
     )
     try:
@@ -333,7 +336,8 @@ def search_clawhub(keyword, max_results=20):
         )
         with urllib.request.urlopen(req, timeout=15) as resp:
             result = json.loads(resp.read().decode())
-            items = result.get("items", [])
+            results = result.get("results", [])
+            items = [r.get("package", {}) for r in results if r.get("package")]
             return [
                 {
                     "name": s.get("name"),
@@ -351,6 +355,162 @@ def search_clawhub(keyword, max_results=20):
                 }
                 for s in items
             ]
+    except Exception as e:
+        return [{"error": str(e)}]
+
+
+def search_glama(keyword, max_results=20):
+    """搜索 Glama.ai MCP 服务器目录，无需认证。
+
+    使用 query 参数进行全文搜索，支持 first 参数控制返回数量和 after 游标分页。
+
+    API: GET https://glama.ai/api/mcp/v1/servers?query=<keyword>&first=<N>
+    """
+    url = (
+        "https://glama.ai/api/mcp/v1/servers?"
+        f"query={urllib.parse.quote(keyword)}&first={max_results}"
+    )
+    try:
+        req = urllib.request.Request(
+            url, headers={"User-Agent": "search-payment-mcp/1.0"}
+        )
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            data = json.loads(resp.read().decode())
+    except Exception as e:
+        return [{"error": f"Glama API 错误: {e}"}]
+
+    results = []
+    for s in data.get("servers", []):
+        repo = s.get("repository") or {}
+        results.append({
+            "id": s.get("id"),
+            "name": s.get("name"),
+            "namespace": s.get("namespace"),
+            "slug": s.get("slug"),
+            "description": s.get("description"),
+            "url": s.get("url"),
+            "repository_url": repo.get("url"),
+            "attributes": s.get("attributes", []),
+            "tools_count": len(s.get("tools", [])),
+        })
+    return results
+
+
+def search_smithery(keyword, max_results=20):
+    """搜索 Smithery Registry，无需认证即可搜索。
+
+    API: GET https://api.smithery.ai/servers?q=<keyword>&pageSize=<N>
+    支持全文本+语义搜索，100k+ 条目。
+    """
+    url = (
+        "https://api.smithery.ai/servers?"
+        f"q={urllib.parse.quote(keyword)}&pageSize={max_results}"
+    )
+    try:
+        req = urllib.request.Request(
+            url,
+            headers={
+                "User-Agent": "search-payment-mcp/1.0",
+                "Accept": "application/json",
+            },
+        )
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            data = json.loads(resp.read().decode())
+            servers = data.get("servers", [])
+            return [
+                {
+                    "qualified_name": s.get("qualifiedName"),
+                    "display_name": s.get("displayName"),
+                    "description": s.get("description"),
+                    "homepage": s.get("homepage"),
+                    "verified": s.get("verified"),
+                    "use_count": s.get("useCount"),
+                    "remote": s.get("remote"),
+                    "is_deployed": s.get("isDeployed"),
+                    "created_at": s.get("createdAt"),
+                    "namespace": s.get("namespace"),
+                    "slug": s.get("slug"),
+                    "by_smithery": s.get("bySmithery"),
+                    "score": s.get("score"),
+                }
+                for s in servers
+            ]
+    except Exception as e:
+        return [{"error": str(e)}]
+
+
+def search_pulsemcp(keyword, api_key=None, tenant_id=None, max_results=30):
+    """搜索 PulseMCP Registry，需要 API Key + Tenant ID。
+
+    API: GET https://api.pulsemcp.com/v0.1/servers?search=<keyword>&limit=<N>
+    需要联系 hello@pulsemcp.com 获取凭证。
+
+    API Key 读取优先级:
+    1. 参数直接传入
+    2. Skill 目录下的 .pulsemcp_api_key 和 .pulsemcp_tenant_id 文件
+    """
+    # 解析 API Key
+    if not api_key:
+        key_file = Path(__file__).resolve().parent.parent / ".pulsemcp_api_key"
+        try:
+            if key_file.is_file():
+                api_key = key_file.read_text().strip()
+        except Exception:
+            pass
+    if not tenant_id:
+        tid_file = Path(__file__).resolve().parent.parent / ".pulsemcp_tenant_id"
+        try:
+            if tid_file.is_file():
+                tenant_id = tid_file.read_text().strip()
+        except Exception:
+            pass
+    if not api_key or not tenant_id:
+        return [{"error": (
+            "PulseMCP 需要 API Key 和 Tenant ID。\n"
+            "获取方式：发送邮件至 hello@pulsemcp.com 申请。\n"
+            "配置方式：\n"
+            "  echo '<api_key>' > ~/.workbuddy/skills/search-payment-mcp/.pulsemcp_api_key\n"
+            "  echo '<tenant_id>' > ~/.workbuddy/skills/search-payment-mcp/.pulsemcp_tenant_id"
+        )}]
+
+    url = (
+        "https://api.pulsemcp.com/v0.1/servers?"
+        f"search={urllib.parse.quote(keyword)}&limit={max_results}&version=latest"
+    )
+    try:
+        req = urllib.request.Request(
+            url,
+            headers={
+                "User-Agent": "search-payment-mcp/1.0",
+                "X-API-Key": api_key,
+                "X-Tenant-ID": tenant_id,
+            },
+        )
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            data = json.loads(resp.read().decode())
+            servers = data.get("servers", [])
+            results = []
+            for entry in servers:
+                s = entry.get("server", {})
+                meta = entry.get("_meta", {})
+                pmeta = meta.get("com.pulsemcp/server", {})
+                vmeta = meta.get("com.pulsemcp/server-version", {})
+                results.append({
+                    "name": s.get("name"),
+                    "title": s.get("title"),
+                    "description": s.get("description"),
+                    "version": s.get("version"),
+                    "website_url": s.get("websiteUrl"),
+                    "repository_url": (s.get("repository") or {}).get("url"),
+                    "is_official": pmeta.get("isOfficial"),
+                    "visitors_weekly": pmeta.get("visitorsEstimateMostRecentWeek"),
+                    "status": vmeta.get("status"),
+                    "is_latest": vmeta.get("isLatest"),
+                })
+            return results
+    except urllib.error.HTTPError as e:
+        body = e.read().decode()[:300]
+        return [{"error": f"PulseMCP HTTP {e.code}: {body}"}]
     except Exception as e:
         return [{"error": str(e)}]
 
@@ -392,6 +552,18 @@ def main():
 
         if "clawhub" in platforms:
             platform_results["clawhub"] = search_clawhub(keyword)
+            time.sleep(0.5)
+
+        if "glama" in platforms:
+            platform_results["glama"] = search_glama(keyword)
+            time.sleep(0.5)
+
+        if "smithery" in platforms:
+            platform_results["smithery"] = search_smithery(keyword)
+            time.sleep(0.5)
+
+        if "pulsemcp" in platforms:
+            platform_results["pulsemcp"] = search_pulsemcp(keyword)
             time.sleep(0.5)
 
         all_results["platforms"][keyword] = platform_results

@@ -243,10 +243,118 @@ class ResultMerger:
             "downloads": entry.get("downloads"),
             "stars": entry.get("stars"),
             "verification_tier": entry.get("verification_tier"),
-            "clawhub_url": f"https://clawhub.ai/{'skills' if entry.get('family') == 'skill' else 'plugins'}/{entry.get('owner_handle', '')}/{name}",
+            "clawhub_url": f"https://clawhub.ai/{entry.get('owner_handle', '')}/{'skills' if entry.get('family') == 'skill' else 'plugins'}/{name}",
             "repo": None,
             "matched_keywords": [keyword],
         }
+
+    def add_glama(self, entry, keyword):
+        if "error" in entry:
+            return
+        glama_id = entry.get("id", "")
+        if not glama_id:
+            return
+        key = normalize(f"{entry.get('namespace','')}/{entry.get('name','')}")
+
+        repo_url = entry.get("repository_url")
+        repo = extract_repo(repo_url) if repo_url else None
+
+        if key in self.items:
+            self.items[key]["platforms"].add("glama")
+            if keyword not in self.items[key]["matched_keywords"]:
+                self.items[key]["matched_keywords"].append(keyword)
+            if repo and not self.items[key].get("repo"):
+                self.items[key]["repo"] = repo
+                self.seen_repos.add(repo)
+            return
+
+        self.items[key] = {
+            "source": "glama",
+            "name": entry.get("name"),
+            "namespace": entry.get("namespace"),
+            "description": entry.get("description"),
+            "platforms": {"glama"},
+            "publisher": entry.get("namespace"),
+            "repo": repo,
+            "attributes": entry.get("attributes", []),
+            "tools_count": entry.get("tools_count"),
+            "glama_url": entry.get("url"),
+            "matched_keywords": [keyword],
+        }
+        if repo:
+            self.seen_repos.add(repo)
+
+    def add_smithery(self, entry, keyword):
+        if "error" in entry:
+            return
+        qualified = entry.get("qualified_name", "")
+        if not qualified:
+            return
+        key = normalize(qualified)
+
+        if key in self.items:
+            self.items[key]["platforms"].add("smithery")
+            if keyword not in self.items[key]["matched_keywords"]:
+                self.items[key]["matched_keywords"].append(keyword)
+            return
+
+        self.items[key] = {
+            "source": "smithery",
+            "name": entry.get("display_name") or qualified,
+            "qualified_name": qualified,
+            "namespace": entry.get("namespace"),
+            "description": entry.get("description"),
+            "platforms": {"smithery"},
+            "publisher": entry.get("namespace"),
+            "verified": entry.get("verified"),
+            "use_count": entry.get("use_count"),
+            "homepage": entry.get("homepage"),
+            "created_at": entry.get("created_at"),
+            "by_smithery": entry.get("by_smithery"),
+            "score": entry.get("score"),
+            "smithery_url": f"https://smithery.ai/servers/{qualified}",
+            "repo": None,
+            "matched_keywords": [keyword],
+        }
+
+    def add_pulsemcp(self, entry, keyword):
+        if "error" in entry:
+            return
+        name = entry.get("name", "")
+        if not name:
+            return
+        key = normalize(name)
+
+        repo_url = entry.get("repository_url")
+        repo = extract_repo(repo_url) if repo_url else None
+
+        if key in self.items:
+            self.items[key]["platforms"].add("pulsemcp")
+            if keyword not in self.items[key]["matched_keywords"]:
+                self.items[key]["matched_keywords"].append(keyword)
+            if repo and not self.items[key].get("repo"):
+                self.items[key]["repo"] = repo
+                self.seen_repos.add(repo)
+            return
+
+        self.items[key] = {
+            "source": "pulsemcp",
+            "name": entry.get("title") or name,
+            "mcp_name": name,
+            "description": entry.get("description"),
+            "version": entry.get("version"),
+            "platforms": {"pulsemcp"},
+            "publisher": None,
+            "is_official": entry.get("is_official"),
+            "visitors_weekly": entry.get("visitors_weekly"),
+            "status": entry.get("status"),
+            "website_url": entry.get("website_url"),
+            "pulsemcp_url": entry.get("website_url"),
+            "repo": repo,
+            "matched_keywords": [keyword],
+        }
+        if repo:
+            self.seen_repos.add(repo)
 
     def merge(self):
         platforms_data = self.data.get("platforms", {})
@@ -263,6 +371,19 @@ class ResultMerger:
                 self.add_mcpcn(entry, keyword)
             for entry in pf.get("clawhub", []):
                 self.add_clawhub(entry, keyword)
+            for entry in pf.get("glama", []):
+                self.add_glama(entry, keyword)
+            for entry in pf.get("smithery", []):
+                self.add_smithery(entry, keyword)
+            for entry in pf.get("pulsemcp", []):
+                self.add_pulsemcp(entry, keyword)
+
+    # URL 优先级：GitHub > npm > PyPI > smithery > glama > pulsemcp > 魔搭 > mcp-cn.com > ClawHub（公开可访问优先）
+    _URL_PRIORITY = [
+        "github_url", "npm_url", "pypi_url",
+        "smithery_url", "glama_url", "pulsemcp_url",
+        "modelscope_url", "mcpcn_url", "clawhub_url",
+    ]
 
     def summary(self):
         items = list(self.items.values())
@@ -270,6 +391,11 @@ class ResultMerger:
         for item in items:
             if "platforms" in item and isinstance(item["platforms"], set):
                 item["platforms"] = sorted(item["platforms"])
+            # Unify URL: pick the best available platform URL
+            for url_key in self._URL_PRIORITY:
+                if item.get(url_key):
+                    item["url"] = item[url_key]
+                    break
         return {
             "company": self.data.get("company", ""),
             "searched_keywords": self.data.get("searched_keywords", []),
@@ -281,6 +407,9 @@ class ResultMerger:
                 "modelscope": sum(1 for i in items if "modelscope" in i.get("platforms", set())),
                 "mcpcn": sum(1 for i in items if "mcpcn" in i.get("platforms", set())),
                 "clawhub": sum(1 for i in items if "clawhub" in i.get("platforms", set())),
+                "glama": sum(1 for i in items if "glama" in i.get("platforms", set())),
+                "smithery": sum(1 for i in items if "smithery" in i.get("platforms", set())),
+                "pulsemcp": sum(1 for i in items if "pulsemcp" in i.get("platforms", set())),
             },
             "items": items,
         }
